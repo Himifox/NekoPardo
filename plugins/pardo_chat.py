@@ -7,6 +7,7 @@ import logging
 from typing import List
 from nonebot import on_fullmatch, on_message
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent, MessageSegment, Bot
+from nonebot.adapters.onebot.v11.permission import PRIVATE
 from nonebot.exception import FinishedException
 from openai import AsyncOpenAI
 
@@ -241,7 +242,7 @@ FEW_SHOT_EXAMPLES = [
 
 client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
 mimic_chat = on_message(priority=2, block=False)  # 优先级最高
-private_chat = on_message(priority=2, block=True)
+private_chat = on_message(permission=PRIVATE, priority=2, block=True)
 
 
 def load_white_list() -> set:
@@ -466,10 +467,11 @@ async def handle_chat(bot:Bot,event: GroupMessageEvent):
         # selected_ref = choose_ref_audio(tts_text + " " + full_reply)
 
         # 1. 检查文本中是否含有表情包关键词
-        # 先判定是否会发送表情包（lamboo变量），如会则先发文本再发表情包
+        # 命中表情包后仍发送正文，确保实际回答与保存的记忆一致。
         send_img = await smart_send(bot, event, full_reply, 1.0)
         if send_img:
             logger.info("send_img已发送表情包")
+            await mimic_chat.send(full_reply)
             save_reply_and_maybe_index(group_id, full_reply)
             return
         # 若不会发表情包，按原逻辑
@@ -524,11 +526,14 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent):
 
     # 以 user_id 作为会话键，复用记忆与回复链路
     session_id = event.user_id
+    sender_name = event.sender.nickname or "老板"
+    memory_content = sanitize_reply(raw_msg)
+    append_short_term_memory(session_id, sender_name, memory_content)
     save_memory_entry(
-        content=sanitize_reply(raw_msg),
+        content=memory_content,
         role="user",
         group_id=session_id,
-        sender=event.sender.nickname or "老板",
+        sender=sender_name,
         user_id=event.user_id,
         timestamp=event.time,
     )
