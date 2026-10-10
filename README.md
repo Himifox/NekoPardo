@@ -85,7 +85,7 @@ python bot.py
 
 入口为 `bot.py`，插件职责见 [plugins/README.md](plugins/README.md)。启动时只显式加载所需插件，避免扫描整个插件目录。
 
-长期记忆默认保存在 `chat_data.jsonl`，索引与用量记录保存在 `data/`。请勿提交私人聊天数据或真实密钥。
+长期记忆默认保存在 `chat_data.jsonl`，索引与用量记录保存在 `data/`。主动聊天当日计数保存在 `data/proactive_usage.json`，重启后继续累计，可通过 `PROACTIVE_USAGE_FILE` 调整路径。请勿提交私人聊天数据或真实密钥。
 
 ## License
 

@@ -1,4 +1,8 @@
-from typing import Any, Optional
+import threading
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from plugins.config import (
     DAILY_CHAT_TOKEN_LIMIT,
@@ -6,6 +10,92 @@ from plugins.config import (
     DAILY_TTS_CHAR_LIMIT,
     PROACTIVE_DAILY_LIMIT,
 )
+
+
+_RESERVATION_LOCK = threading.RLock()
+_RESERVATIONS: set["BudgetReservation"] = set()
+_UNRECORDED_USAGE: dict[tuple[str, str], int] = {}
+
+
+def _today() -> str:
+    return datetime.now().date().isoformat()
+
+
+def _limit_for(kind: str) -> int:
+    return {"chat_completion": DAILY_CHAT_TOKEN_LIMIT, "embedding": DAILY_EMBEDDING_TOKEN_LIMIT,
+            "tts": DAILY_TTS_CHAR_LIMIT}[kind]
+
+
+class BudgetExceededError(RuntimeError):
+    pass
+
+
+@asynccontextmanager
+async def budget_scope(kind: str, requested: int, summary_loader: Callable[..., dict], telemetry_file: Path):
+    # A configured hard limit serializes requests of this kind across the bot
+    # and admin processes. Different kinds and unlimited requests stay parallel.
+    from plugins.file_lock import async_file_lock
+
+    if is_limit_enabled(_limit_for(kind)):
+        lock_path = Path(str(telemetry_file) + f".{kind}.budget.lock")
+        async with async_file_lock(lock_path):
+            reservation = reserve_budget(kind, requested, summary_loader)
+            if reservation is None:
+                raise BudgetExceededError(f"Daily {kind} budget exceeded")
+            with reservation:
+                yield reservation
+    else:
+        reservation = reserve_budget(kind, requested, summary_loader)
+        with reservation:
+            yield reservation
+
+
+class BudgetReservation:
+    """One in-flight request; context exit releases failures and cancellation."""
+
+    def __init__(self, kind: str, requested: int):
+        self.kind = kind
+        self.requested = requested
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        with _RESERVATION_LOCK:
+            _RESERVATIONS.discard(self)
+
+    def settle(self, actual: int, record_usage: Callable[[], None]) -> None:
+        # Persist and release under the same lock so a new reservation cannot
+        # see the same request both unreserved and unrecorded.
+        with _RESERVATION_LOCK:
+            if self not in _RESERVATIONS:
+                return
+            day = _today()
+            try:
+                record_usage()
+            except BaseException:
+                key = (day, self.kind)
+                _UNRECORDED_USAGE[key] = _UNRECORDED_USAGE.get(key, 0) + max(0, int(actual))
+                raise
+            finally:
+                _RESERVATIONS.discard(self)
+
+
+def reserve_budget(kind: str, requested: int, summary_loader: Callable[..., dict]) -> Optional[BudgetReservation]:
+    limit = _limit_for(kind)
+    requested = max(0, int(requested))
+    with _RESERVATION_LOCK:
+        day = _today()
+        summary = summary_loader(day=day)
+        used = int(summary.get("chars") or 0) if kind == "tts" else get_kind_total_tokens(summary, kind)
+        # Requests crossing midnight can still complete on the new day.
+        pending = sum(item.requested for item in _RESERVATIONS if item.kind == kind)
+        used += pending + _UNRECORDED_USAGE.get((day, kind), 0)
+        if would_exceed_limit(limit, used, requested):
+            return None
+        reservation = BudgetReservation(kind, requested)
+        _RESERVATIONS.add(reservation)
+        return reservation
 
 
 def is_limit_enabled(limit: int) -> bool:

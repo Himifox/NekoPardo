@@ -52,11 +52,10 @@ async def check_silence():
         last_active_time[group_id] = now
         if random.random() > proactive_probability():
             continue
-        if proactive_budget_exceeded(get_proactive_daily_count()):
-            logger.warning("Skip proactive chat: daily proactive limit exceeded")
-            continue
-
         try:
+            if proactive_budget_exceeded(get_proactive_daily_count()):
+                logger.warning("Skip proactive chat: daily proactive limit exceeded")
+                continue
             bot = get_bot()
             prompt = "群里安静了一会儿，请用帕朵的口吻主动找一个轻松话题，简短破冰。"
             reply = await generate_pardo_reply(group_id, prompt, temperature=0.95)

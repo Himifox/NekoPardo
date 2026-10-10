@@ -54,6 +54,7 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
         self.monitor.last_active_time.clear()
         self.chat.active_groups.clear()
         self.chat.active_groups.add(123)
+        Path(self.chat.WHITE_LIST_FILE).write_text('[123]', encoding='utf-8')
         self.store.memory_file_path().unlink(missing_ok=True)
 
     def event(self, text, *, private=False, user_id=42, to_me=False, subtype=None):
@@ -81,6 +82,29 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
                     self.event('私聊', private=True, subtype=subtype), {},
                 ))
 
+    async def test_bot_and_sticker_groups_refresh_and_preserve_last_valid_state(self):
+        path = Path(self.chat.WHITE_LIST_FILE)
+        self.assertTrue(self.chat.is_group_active(123))
+        path.write_text('[456]', encoding='utf-8')
+        self.assertFalse(self.chat.is_group_active(123))
+        self.assertEqual(self.chat.get_active_group_ids(), {456})
+        self.assertEqual(self.stickers.load_active_groups(), {456})
+        path.write_text('invalid json', encoding='utf-8')
+        with patch.object(self.chat.logger, 'exception'), patch.object(self.stickers.logger, 'exception'):
+            self.assertEqual(self.chat.get_active_group_ids(), {456})
+            self.assertEqual(self.stickers.load_active_groups(), {456})
+
+    async def test_activation_write_failure_is_reported_without_enabling_group(self):
+        event = self.event(self.chat.ACTIVATE_COMMAND)
+        event.group_id = 456
+        with patch.object(self.chat, 'update_active_groups', side_effect=OSError('disk failed')), patch.object(
+            Bot, 'send', new_callable=AsyncMock,
+        ) as send, patch.object(self.chat.logger, 'exception'):
+            await _run_matcher(self.chat.mimic_chat, self.bot, event, {})
+        self.assertIn('启用失败', str(send.await_args.kwargs['message']))
+        self.assertFalse(self.chat.is_group_active(456))
+        self.assertEqual(Path(self.chat.WHITE_LIST_FILE).read_text(encoding='utf-8'), '[123]')
+
     async def test_group_dispatch_reaches_activity_and_sticker_listeners(self):
         with patch.object(self.monitor, 'PROACTIVE_CHAT_ENABLED', True), patch.object(
             self.stickers, 'should_collect_from_event', return_value=False,
@@ -90,6 +114,17 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
         collect.assert_called_once()
         generate.assert_not_awaited()
         self.assertIn('普通群消息', self.memory.get_history_str(123))
+
+    async def test_corrupt_proactive_usage_skips_sending_without_stopping_monitor(self):
+        self.monitor.mark_group_active(123)
+        with patch.object(self.monitor, 'PROACTIVE_SILENCE_MINUTES', -1), patch.object(
+            self.monitor, 'proactive_probability', return_value=1.0,
+        ), patch.object(self.monitor, 'get_proactive_daily_count', side_effect=ValueError('invalid count')), patch.object(
+            self.monitor, 'get_bot',
+        ) as get_bot, patch.object(self.monitor.logger, 'exception') as error:
+            await self.monitor.check_silence()
+        get_bot.assert_not_called()
+        error.assert_called_once()
 
     async def test_private_history_contains_both_sides_without_duplicate_records(self):
         histories = []

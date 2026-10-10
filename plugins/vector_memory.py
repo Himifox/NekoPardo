@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from openai import AsyncOpenAI
 
-from plugins.budget_guard import embedding_budget_exceeded
+from plugins.budget_guard import embedding_budget_exceeded, budget_scope
 from plugins.config import (
     EMBEDDING_API_KEY,
     EMBEDDING_BASE_URL,
@@ -26,7 +26,8 @@ from plugins.config import (
     VECTOR_MEMORY_TOP_K,
 )
 from plugins.memory_store import iter_memory_records
-from plugins.usage_telemetry import estimate_tokens_from_text, extract_usage_tokens, get_model_usage_summary, record_model_usage
+from plugins.file_lock import async_file_lock
+from plugins.usage_telemetry import estimate_tokens_from_text, extract_usage_tokens, get_model_usage_summary, record_model_usage, telemetry_path
 
 logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -115,6 +116,8 @@ def iter_vector_records():
 def load_indexed_memory_ids() -> set[str]:
     indexed: set[str] = set()
     for record in iter_vector_records() or []:
+        if record.get("embedding_model") != EMBEDDING_MODEL:
+            continue
         memory_id = str(record.get("memory_id") or "").strip()
         if memory_id:
             indexed.add(memory_id)
@@ -133,29 +136,27 @@ async def embed_text(text: str) -> list[float]:
         raise RuntimeError("EMBEDDING_API_KEY is not configured")
 
     started_at = time.perf_counter()
-    try:
-        requested_tokens = estimate_tokens_from_text(text)
-        if embedding_budget_exceeded(get_model_usage_summary(), requested_tokens):
-            raise RuntimeError("DAILY_EMBEDDING_TOKEN_LIMIT exceeded")
-
-        client = AsyncOpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL)
-        response = await client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+    requested_tokens = estimate_tokens_from_text(text)
+    async with budget_scope("embedding", requested_tokens, get_model_usage_summary, telemetry_path()) as reservation:
+        try:
+            async with AsyncOpenAI(api_key=EMBEDDING_API_KEY, base_url=EMBEDDING_BASE_URL) as client:
+                response = await client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+        except Exception as exc:
+            usage = {"prompt_tokens": requested_tokens, "completion_tokens": 0, "total_tokens": requested_tokens}
+            _record_embedding_usage(text, False, started_at, usage, True, error=str(exc))
+            raise
         usage = extract_usage_tokens(getattr(response, "usage", None))
-        estimated_tokens = False
-        if usage["total_tokens"] <= 0:
-            usage["prompt_tokens"] = estimate_tokens_from_text(text)
-            usage["total_tokens"] = usage["prompt_tokens"]
-            estimated_tokens = True
-        _record_embedding_usage(text, True, started_at, usage, estimated_tokens)
+        estimated_tokens = usage["total_tokens"] <= 0
+        if estimated_tokens:
+            usage["prompt_tokens"] = requested_tokens
+            usage["total_tokens"] = requested_tokens
+        reservation.settle(usage["total_tokens"], lambda: record_model_usage(
+            kind="embedding", model=EMBEDDING_MODEL, success=True,
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000),
+            prompt_tokens=usage["prompt_tokens"], total_tokens=usage["total_tokens"],
+            estimated_tokens=estimated_tokens, input_chars=len(text or ""),
+        ))
         return list(response.data[0].embedding)
-    except Exception as exc:
-        usage = {
-            "prompt_tokens": estimate_tokens_from_text(text),
-            "completion_tokens": 0,
-            "total_tokens": estimate_tokens_from_text(text),
-        }
-        _record_embedding_usage(text, False, started_at, usage, True, error=str(exc))
-        raise
 
 
 def _record_embedding_usage(
@@ -202,6 +203,16 @@ async def build_vector_memory_index(
     limit: Optional[int] = None,
     embedding_func: Optional[EmbeddingFunc] = None,
 ) -> dict[str, int | str | bool]:
+    path = vector_memory_path()
+    async with async_file_lock(path.with_name(path.name + ".lock")):
+        return await _build_vector_memory_index(limit=limit, embedding_func=embedding_func)
+
+
+async def _build_vector_memory_index(
+    *,
+    limit: Optional[int] = None,
+    embedding_func: Optional[EmbeddingFunc] = None,
+) -> dict[str, int | str | bool]:
     embed = embedding_func or embed_text
     indexed_ids = load_indexed_memory_ids()
     stats: dict[str, int | str | bool] = {
@@ -217,10 +228,13 @@ async def build_vector_memory_index(
     if not EMBEDDING_API_KEY and embedding_func is None:
         stats["error"] = "EMBEDDING_API_KEY is not configured"
         return stats
+    if limit is not None and limit <= 0:
+        return stats
     if embedding_func is None and embedding_budget_exceeded(get_model_usage_summary()):
         stats["error"] = "DAILY_EMBEDDING_TOKEN_LIMIT exceeded"
         return stats
 
+    attempted = 0
     for memory in iter_memory_records() or []:
         stats["total_memory"] += 1
         memory_id = str(memory.get("id") or "").strip()
@@ -233,6 +247,7 @@ async def build_vector_memory_index(
             continue
 
         stats["eligible"] += 1
+        attempted += 1
         try:
             embedding = await embed(content)
             append_vector_record(_memory_record_to_vector_record(memory, embedding))
@@ -242,7 +257,7 @@ async def build_vector_memory_index(
             stats["failed"] += 1
             logger.exception("Failed to index memory record %s", memory_id)
 
-        if limit is not None and int(stats["added"]) >= limit:
+        if limit is not None and attempted >= limit:
             break
     return stats
 
@@ -313,8 +328,11 @@ async def search_vector_memory(
     threshold = VECTOR_MEMORY_MIN_SCORE if min_score is None else min_score
     limit = VECTOR_MEMORY_TOP_K if top_k is None else top_k
     matches: list[dict[str, Any]] = []
+    matched_ids: set[str] = set()
 
     for record in iter_vector_records() or []:
+        if record.get("embedding_model") != EMBEDDING_MODEL:
+            continue
         if int(record.get("group_id", -1)) != int(group_id):
             continue
         embedding = record.get("embedding")
@@ -323,6 +341,11 @@ async def search_vector_memory(
         score = cosine_similarity(query_embedding, [float(value) for value in embedding])
         if score < threshold:
             continue
+        memory_id = str(record.get("memory_id") or "").strip()
+        if memory_id and memory_id in matched_ids:
+            continue
+        if memory_id:
+            matched_ids.add(memory_id)
         matches.append({
             "memory_id": record.get("memory_id"),
             "group_id": record.get("group_id"),

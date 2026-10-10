@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 import httpx
 
-from plugins.budget_guard import tts_budget_exceeded
+from plugins.budget_guard import BudgetExceededError, budget_scope
 from plugins.config import (
     DASHSCOPE_TTS_API_KEY,
     DASHSCOPE_TTS_MODEL,
@@ -499,7 +499,14 @@ async def get_tts_audio(
     sample_steps: int = 64,
     speed_factor: Optional[float] = None,
 ) -> Optional[str]:
-    if tts_budget_exceeded(get_tts_usage_summary(), _billable_chars(text)):
+    chars = _billable_chars(text)
+    try:
+        async with budget_scope("tts", chars, get_tts_usage_summary, _telemetry_path()) as reservation:
+            return await _synthesize_tts_audio(
+                reservation, text, ref_path, provider=provider, batch_size=batch_size,
+                sample_steps=sample_steps, speed_factor=speed_factor,
+            )
+    except BudgetExceededError:
         logger.warning("Skip TTS: daily TTS char budget exceeded")
         try:
             _record_tts_telemetry("budget_guard", text, False, 0)
@@ -507,32 +514,39 @@ async def get_tts_audio(
             logger.exception("Required TTS telemetry failed while enforcing budget")
         return None
 
-    for candidate in _provider_chain(provider):
-        started_at = time.perf_counter()
-        if candidate == "doubao":
-            audio = await get_doubao_audio(text)
-        elif candidate == "dashscope":
-            audio = await get_dashscope_audio(text)
-        elif candidate == "gsv":
-            audio = await get_sovits_audio(
-                text,
-                ref_path=ref_path,
-                batch_size=batch_size,
-                sample_steps=sample_steps,
-                speed_factor=speed_factor,
-            )
-        else:
-            logger.warning("Unknown TTS provider '%s'; skip", candidate)
-            audio = None
 
-        elapsed_ms = round((time.perf_counter() - started_at) * 1000)
-        try:
-            _record_tts_telemetry(candidate, text, bool(audio), elapsed_ms)
-        except Exception:
-            logger.exception("Required TTS telemetry failed; suppressing voice output")
-            return None
-        if audio:
-            logger.info("TTS provider '%s' succeeded", candidate)
-            return audio
-        logger.warning("TTS provider '%s' failed; trying next fallback if available", candidate)
+async def _synthesize_tts_audio(reservation, text, ref_path, *, provider, batch_size, sample_steps, speed_factor):
+    chars = _billable_chars(text)
+    with reservation:
+        for candidate in _provider_chain(provider):
+            started_at = time.perf_counter()
+            if candidate == "doubao":
+                audio = await get_doubao_audio(text)
+            elif candidate == "dashscope":
+                audio = await get_dashscope_audio(text)
+            elif candidate == "gsv":
+                audio = await get_sovits_audio(
+                    text,
+                    ref_path=ref_path,
+                    batch_size=batch_size,
+                    sample_steps=sample_steps,
+                    speed_factor=speed_factor,
+                )
+            else:
+                logger.warning("Unknown TTS provider '%s'; skip", candidate)
+                audio = None
+
+            elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+            try:
+                if audio:
+                    reservation.settle(chars, lambda: _record_tts_telemetry(candidate, text, True, elapsed_ms))
+                else:
+                    _record_tts_telemetry(candidate, text, False, elapsed_ms)
+            except Exception:
+                logger.exception("Required TTS telemetry failed; suppressing voice output")
+                return None
+            if audio:
+                logger.info("TTS provider '%s' succeeded", candidate)
+                return audio
+            logger.warning("TTS provider '%s' failed; trying next fallback if available", candidate)
     return None

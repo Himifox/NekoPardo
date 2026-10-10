@@ -3,6 +3,8 @@ import re
 import random
 import json
 import hashlib
+import tempfile
+from pathlib import Path
 import aiohttp
 import aiofiles
 from nonebot import on_message, on_command, logger
@@ -16,6 +18,7 @@ from plugins.config import (
     STICKER_SEND_LOCAL_FIRST,
     WHITE_LIST_FILE,
 )
+from plugins.file_lock import async_file_lock
 
 #==============================
 # 配置项
@@ -37,19 +40,46 @@ async def load_collection():
         return json.loads(content)
 
 async def save_collection(collection):
-    async with aiofiles.open(COLLECTION_JSON, "w", encoding="utf-8") as f:
-        await f.write(json.dumps(collection, ensure_ascii=False, indent=2))
+    target = Path(COLLECTION_JSON)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+                                         prefix=target.name + ".", suffix=".tmp", delete=False) as file:
+            temporary = Path(file.name)
+            json.dump(collection, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+async def update_collection_entry(img_md5: str, img_url: str, meaning=None) -> None:
+    # Re-read after recognition: another event/process may have added stickers.
+    async with async_file_lock(Path(str(COLLECTION_JSON) + ".lock")):
+        collection = await load_collection()
+        if meaning is None:
+            previous = collection.get(img_md5, {})
+            meaning = previous.get("meaning", previous) if isinstance(previous, dict) else previous
+        collection[img_md5] = {"meaning": meaning, "url": img_url}
+        await save_collection(collection)
+
+
+_last_active_groups: set[int] = set()
 
 
 def load_active_groups() -> set[int]:
-    if not os.path.exists(WHITE_LIST_FILE):
-        return set()
+    from plugins.group_access import read_active_groups
+
     try:
-        with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
-            return {int(group_id) for group_id in json.load(f)}
-    except Exception:
+        groups = read_active_groups(WHITE_LIST_FILE)
+        _last_active_groups.clear()
+        _last_active_groups.update(groups)
+    except (OSError, ValueError, TypeError):
         logger.exception("Failed to load active groups for sticker collection")
-        return set()
+    return set(_last_active_groups)
 
 
 def should_collect_from_event(event: Event) -> bool:
@@ -123,11 +153,7 @@ async def _(bot: Bot, event: Event):
             
             # 检查本地是否已收藏
             if img_md5 in coll:
-                old_data = coll[img_md5]
-                # 【修复Bug】防止字典重复嵌套
-                old_meaning = old_data.get("meaning", old_data) if isinstance(old_data, dict) else old_data
-                coll[img_md5] = {"meaning": old_meaning, "url": img_url}
-                await save_collection(coll)
+                await update_collection_entry(img_md5, img_url)
                 logger.info(f"Updated existing sticker URL: {img_md5}")
                 await download_sticker_image(img_url, img_md5)
                 if not STICKER_RECOGNIZE_EXISTING:
@@ -138,8 +164,7 @@ async def _(bot: Bot, event: Event):
             logger.info(f"New sticker detected, recognizing with Qwen-VL: {img_md5}")
             meaning = await qwen_recognize_sticker(img_url)
             if meaning:
-                coll[img_md5] = {"meaning": meaning, "url": img_url}
-                await save_collection(coll)
+                await update_collection_entry(img_md5, img_url, meaning)
                 logger.info(f"Sticker recognized and saved: {meaning}")
             
             else:

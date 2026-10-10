@@ -210,3 +210,7 @@ __marimo__/
 data/tts_usage.jsonl
 data/vector_memory.jsonl
 data/model_usage.jsonl
+data/proactive_usage.json
+data/*.lock
+active_groups.json.lock
+sticker_collection.json.lock

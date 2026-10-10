@@ -11,19 +11,18 @@ from nonebot.adapters.onebot.v11.permission import PRIVATE
 from nonebot.exception import FinishedException
 from openai import AsyncOpenAI
 
-from plugins.budget_guard import chat_budget_exceeded, format_budget_summary
+from plugins.budget_guard import BudgetExceededError, format_budget_summary
 from plugins.memory import get_history_str, save_bot_reply, append_short_term_memory, sanitize_reply
 from plugins.memory_store import save_memory_entry
+from plugins.group_access import read_active_groups, update_active_groups
 from plugins.proactive_usage import get_proactive_daily_count
 from plugins.sticker_service import qwen_recognize_sticker, smart_send
 from plugins.config import *
 from plugins.tts import format_tts_usage_summary, get_tts_audio, get_tts_usage_summary, to_api_path
 from plugins.usage_telemetry import (
-    estimate_tokens_from_text,
-    extract_usage_tokens,
     format_model_usage_summary,
     get_model_usage_summary,
-    record_model_usage,
+    request_chat_completion,
 )
 from plugins.vector_memory import (
     build_vector_memory_index,
@@ -108,34 +107,6 @@ def save_reply_and_maybe_index(group_id: int, content: str) -> None:
     if schedule_vector_memory_auto_index():
         logger.info("Vector memory auto index scheduled")
 
-
-def record_chat_completion_usage(
-    *,
-    success: bool,
-    started_at: float,
-    system_content: str,
-    user_content: str,
-    reply_content: str = "",
-    usage: object = None,
-    error: str = "",
-) -> None:
-    try:
-        tokens = extract_usage_tokens(usage)
-        record_model_usage(
-            kind="chat_completion",
-            model=MODEL_NAME,
-            success=success,
-            elapsed_ms=round((time.perf_counter() - started_at) * 1000),
-            prompt_tokens=tokens["prompt_tokens"],
-            completion_tokens=tokens["completion_tokens"],
-            total_tokens=tokens["total_tokens"],
-            estimated_tokens=False,
-            input_chars=len(system_content or "") + len(user_content or ""),
-            output_chars=len(reply_content or ""),
-            error=error,
-        )
-    except Exception:
-        logger.exception("Failed to record chat completion usage telemetry")
 
 # --- 帕朵菲莉丝长人设 (System Prompt) ---
 # 原帕朵人设已注释，暂时换为"傲娇御姐猫娘"设定。
@@ -246,32 +217,32 @@ private_chat = on_message(permission=PRIVATE, priority=2, block=True)
 
 
 def load_white_list() -> set:
-    if os.path.exists(WHITE_LIST_FILE):
-        try:
-            with open(WHITE_LIST_FILE, "r") as f:
-                return set(json.load(f))
-        except Exception:
-            logger.exception("load_white_list failed")
-            return set()
-    return set()
+    try:
+        return read_active_groups(WHITE_LIST_FILE)
+    except (OSError, ValueError, TypeError):
+        logger.exception("load_white_list failed; preserving last valid groups")
+        return set(active_groups)
 
 
 def save_white_list(data) -> None:
-    try:
-        with open(WHITE_LIST_FILE, "w") as f:
-            json.dump(list(data), f)
-    except Exception:
-        logger.exception("save_white_list failed")
+    # Add only the requested groups to the latest disk state, never a stale cache.
+    groups = update_active_groups(WHITE_LIST_FILE, add=data)
+    active_groups.clear()
+    active_groups.update(groups)
 
 
-active_groups = load_white_list()
+active_groups = set()
+active_groups.update(load_white_list())
 
 
 def is_group_active(group_id: int) -> bool:
-    return group_id in active_groups
+    return group_id in get_active_group_ids()
 
 
 def get_active_group_ids() -> set[int]:
+    groups = load_white_list()
+    active_groups.clear()
+    active_groups.update(groups)
     return set(active_groups)
 
 # =======================================
@@ -332,14 +303,9 @@ async def generate_pardo_reply(
         "接下来请你用帕朵的口吻回复老板的话，保持语气和人设的一致性！"
     )
 
-    requested_tokens = estimate_tokens_from_text(system_content) + estimate_tokens_from_text(user_content) + max_tokens
-    if chat_budget_exceeded(get_model_usage_summary(), requested_tokens):
-        logger.warning("Skip chat completion: daily chat token budget exceeded")
-        return "老板，今天聊天预算见底啦，咱先省点小钱，晚点再聊哦。"
-
-    started_at = time.perf_counter()
     try:
-        response = await client.chat.completions.create(
+        response = await request_chat_completion(
+            client,
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_content},
@@ -354,24 +320,10 @@ async def generate_pardo_reply(
         reply_content = response.choices[0].message.content.strip()
         # 清洗致命敏感词，避免回复进入历史后污染后续请求
         reply_content = sanitize_reply(reply_content)
-        record_chat_completion_usage(
-            success=True,
-            started_at=started_at,
-            system_content=system_content,
-            user_content=user_content,
-            reply_content=reply_content,
-            usage=getattr(response, "usage", None),
-        )
         return reply_content
-    except Exception as exc:
-        record_chat_completion_usage(
-            success=False,
-            started_at=started_at,
-            system_content=system_content,
-            user_content=user_content,
-            error=str(exc),
-        )
-        raise
+    except BudgetExceededError:
+        logger.warning("Skip chat completion: daily chat token budget exceeded")
+        return "老板，今天聊天预算见底啦，咱先省点小钱，晚点再聊哦。"
 
 # Call this function at the start of the script to ensure the directory and file exist
 def ensure_ref_audio_exists():
@@ -414,14 +366,17 @@ async def handle_chat(bot:Bot,event: GroupMessageEvent):
 
     # 1. 激活与白名单逻辑
     if sender_uid == ADMIN_UID and ACTIVATE_COMMAND in raw_msg:
-        if group_id not in active_groups:
-            active_groups.add(group_id)
-            save_white_list(active_groups)
+        if not is_group_active(group_id):
+            try:
+                save_white_list({group_id})
+            except (OSError, ValueError, TypeError):
+                logger.exception("Failed to activate group %s", group_id)
+                await mimic_chat.finish("启用失败：白名单无法写入，请检查文件后重试。")
             await mimic_chat.finish(f"来喽！老板，帕朵菲莉丝为您服务！")
         else:
             await mimic_chat.finish("老板，咱一直都在这儿呢！")
 
-    if group_id not in active_groups and not event.is_tome():
+    if not is_group_active(group_id) and not event.is_tome():
         return
 
     # 2. 回复模式判定（优化版）
