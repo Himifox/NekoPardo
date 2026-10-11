@@ -42,15 +42,18 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
             with patch('openai.AsyncOpenAI'):
                 cls.chat = importlib.import_module('plugins.pardo_chat')
                 cls.memory = importlib.import_module('plugins.memory')
+                cls.session = importlib.import_module('virtualme.memory.session')
+                cls.policy = importlib.import_module('virtualme.chat.text_policy')
                 cls.store = importlib.import_module('plugins.memory_store')
                 cls.monitor = importlib.import_module('plugins.proactive_monitor')
                 cls.stickers = importlib.import_module('plugins.sticker_service')
+                cls.access = importlib.import_module('virtualme.chat.access')
         finally:
             os.chdir(previous)
         cls.bot = Bot(Adapter(nonebot.get_driver()), '1')
 
     def setUp(self):
-        self.memory._history_cache.clear()
+        self.session._history_cache.clear()
         self.monitor.last_active_time.clear()
         self.chat.active_groups.clear()
         self.chat.active_groups.add(123)
@@ -97,7 +100,7 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
     async def test_activation_write_failure_is_reported_without_enabling_group(self):
         event = self.event(self.chat.ACTIVATE_COMMAND)
         event.group_id = 456
-        with patch.object(self.chat, 'update_active_groups', side_effect=OSError('disk failed')), patch.object(
+        with patch.object(self.access, 'update_active_groups', side_effect=OSError('disk failed')), patch.object(
             Bot, 'send', new_callable=AsyncMock,
         ) as send, patch.object(self.chat.logger, 'exception'):
             await _run_matcher(self.chat.mimic_chat, self.bot, event, {})
@@ -113,7 +116,7 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(123, self.monitor.last_active_time)
         collect.assert_called_once()
         generate.assert_not_awaited()
-        self.assertIn('普通群消息', self.memory.get_history_str(123))
+        self.assertIn('普通群消息', self.session.get_history_str(123))
 
     async def test_corrupt_proactive_usage_skips_sending_without_stopping_monitor(self):
         self.monitor.mark_group_active(123)
@@ -126,11 +129,56 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
         get_bot.assert_not_called()
         error.assert_called_once()
 
+    async def test_proactive_delivery_records_only_after_send_and_keeps_parameters(self):
+        import types
+        calls = []
+
+        async def send(**kwargs):
+            calls.append('send')
+
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                calls.clear()
+                self.monitor.mark_group_active(123)
+                delivery = AsyncMock(side_effect=RuntimeError('offline') if failed else send)
+                with patch.object(self.monitor, 'PROACTIVE_SILENCE_MINUTES', -1), patch.object(
+                    self.monitor, 'proactive_probability', return_value=1.0,
+                ), patch.object(self.monitor, 'get_proactive_daily_count', return_value=0), patch.object(
+                    self.monitor, 'proactive_budget_exceeded', return_value=False,
+                ), patch.object(self.monitor, 'get_bot', return_value=types.SimpleNamespace(send_group_msg=delivery)), patch.object(
+                    self.monitor, 'generate_pardo_reply', new_callable=AsyncMock, return_value='主动回答',
+                ) as generate, patch.object(
+                    self.monitor, 'save_reply_and_maybe_index', side_effect=lambda *args: calls.append('record'),
+                ) as record, patch.object(
+                    self.monitor, 'increment_proactive_daily_count', side_effect=lambda: calls.append('count'),
+                ) as increment, patch.object(self.monitor.logger, 'exception'):
+                    await self.monitor.check_silence()
+                generate.assert_awaited_once_with(
+                    123, '群里安静了一会儿，请用帕朵的口吻主动找一个轻松话题，简短破冰。', temperature=.95)
+                delivery.assert_awaited_once_with(group_id=123, message='主动回答')
+                self.assertEqual(calls, [] if failed else ['send', 'record', 'count'])
+                self.assertEqual(record.call_count, int(not failed))
+                self.assertEqual(increment.call_count, int(not failed))
+
+    async def test_voice_and_at_delivery_keep_one_reply_record(self):
+        for text, to_me, count in (('帕朵，语音回答', False, 1), ('你好', True, 2)):
+            with self.subTest(to_me=to_me):
+                self.setUp()
+                with patch.object(self.chat, 'generate_pardo_reply', new_callable=AsyncMock, return_value='（动作）完整回答'), patch.object(
+                    self.chat, 'smart_send', new_callable=AsyncMock, return_value=False,
+                ), patch.object(self.chat, 'get_tts_audio', new_callable=AsyncMock, return_value='audio') as tts, patch.object(
+                    self.chat.random, 'random', return_value=0,
+                ), patch.object(Bot, 'send', new_callable=AsyncMock) as send:
+                    await _run_matcher(self.chat.mimic_chat, self.bot, self.event(text, to_me=to_me), {})
+                self.assertEqual(send.await_count, count)
+                tts.assert_awaited_once_with('完整回答', ref_path=self.chat.REFER_WAV_PATH)
+                self.assertEqual([r['content'] for r in self.store.iter_memory_records()], ['（动作）完整回答'])
+
     async def test_private_history_contains_both_sides_without_duplicate_records(self):
         histories = []
 
         async def reply(session_id, text):
-            histories.append(self.memory.get_history_str(session_id))
+            histories.append(self.session.get_history_str(session_id))
             return '机器人回答'
 
         with patch.object(self.chat, 'generate_pardo_reply', side_effect=reply), patch.object(
@@ -144,7 +192,7 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
         records = list(self.store.iter_memory_records())
         self.assertEqual([r['role'] for r in records], ['user', 'bot', 'user', 'bot'])
         self.assertEqual(send.await_count, 2)
-        self.assertNotIn('第一轮问题', self.memory.get_history_str(123))
+        self.assertNotIn('第一轮问题', self.session.get_history_str(123))
 
     async def test_unauthorized_or_empty_private_messages_do_not_enter_memory(self):
         with patch.object(self.chat, 'generate_pardo_reply', new_callable=AsyncMock) as generate, patch.object(
@@ -155,15 +203,15 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
         generate.assert_not_awaited()
         send.assert_not_awaited()
         self.assertEqual(list(self.store.iter_memory_records() or []), [])
-        self.assertFalse(self.memory._history_cache)
+        self.assertFalse(self.session._history_cache)
 
     async def test_private_input_is_sanitized_in_both_memory_stores(self):
         with patch.object(self.chat, 'generate_pardo_reply', new_callable=AsyncMock, return_value='回答'), patch.object(
             Bot, 'send', new_callable=AsyncMock,
         ):
             await self.run_private(self.event('操作说明', private=True))
-        expected = self.memory.sanitize_reply('操作说明')
-        self.assertIn(expected, self.memory.get_history_str(42))
+        expected = self.policy.sanitize_reply('操作说明')
+        self.assertIn(expected, self.session.get_history_str(42))
         self.assertEqual(next(self.store.iter_memory_records())['content'], expected)
 
     async def test_sticker_match_also_delivers_and_records_answer(self):
@@ -199,7 +247,7 @@ class ChatMessageTests(unittest.IsolatedAsyncioTestCase):
             await _run_matcher(self.chat.mimic_chat, self.bot, self.event('帕朵，帮我回答问题'), {})
         error.assert_called_once()
         self.assertEqual(list(self.store.iter_memory_records() or []), [])
-        self.assertFalse(self.memory._history_cache)
+        self.assertFalse(self.session._history_cache)
 
 
 if __name__ == '__main__':

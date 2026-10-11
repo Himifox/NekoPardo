@@ -19,17 +19,38 @@ nonebot.load_plugin("plugins.proactive_monitor")
 | File | Role |
 | --- | --- |
 | `pardo.py` | Bot connect startup behavior and role greeting |
-| `pardo_chat.py` | Main group chat chain, admin commands, reply delivery |
+| `pardo_chat.py` | Group/private chat triggers, admin commands, reply delivery |
 | `proactive_monitor.py` | Silence monitor and proactive chat trigger |
 | `config.py` | Single configuration entrypoint |
 | `tts.py` | Cloud TTS, GPT-SoVITS fallback, TTS telemetry |
-| `memory.py` | Short-term message memory listener |
+| `memory.py` | Group message listener; delegates storage to `virtualme.memory.session` |
 | `memory_store.py` | Long-term JSONL memory storage |
 | `vector_memory.py` | Embedding index build/search and memory recall formatting |
 | `usage_telemetry.py` | Chat and embedding token telemetry |
 | `budget_guard.py` | Daily cost and usage limits |
 | `proactive_usage.py` | Daily proactive chat counter |
 | `sticker_service.py` | Sticker learning, recognition, collection access, smart sending |
+
+## Shared Chat Core
+
+`virtualme/` contains ordinary Python modules without NoneBot registration:
+
+| Module | Role |
+| --- | --- |
+| `chat/service.py` | Shared group/private/proactive reply generation, successful-delivery memory recording, lazy model client lifecycle |
+| `chat/context.py` | Existing persona, group history, sampled messages and optional vector recall prompt assembly |
+| `chat/text_policy.py` | Existing text replacements and TTS action removal |
+| `chat/persona.py` | Existing Python persona constant; admin edits this source, bot reloads it on restart |
+| `chat/access.py` | Shared active-group cache and file refresh |
+| `memory/session.py` | Existing 20-message cache and incoming/outgoing memory recording |
+
+Adapters retain permission checks, triggers and delivery. Incoming group messages
+are recorded by `plugins.memory` once, including messages that do not trigger a
+reply; private messages are recorded after authorization. Reply generation never
+records a delivered reply. Adapters record it only after sending text or audio.
+Proactive chat uses the same core without importing the chat adapter. The admin
+test conversation remains independent in this phase. Existing integer session
+keys, storage formats, prompt text and model parameters are preserved.
 
 ## Optional / Legacy Modules
 

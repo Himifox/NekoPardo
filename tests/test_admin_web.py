@@ -46,6 +46,7 @@ class AdminWebTests(unittest.TestCase):
         cls.admin = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {**stubs, spec.name: cls.admin}):
             spec.loader.exec_module(cls.admin)
+        cls.persona_path = cls.admin.PLUGIN_FILE
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -62,6 +63,17 @@ class AdminWebTests(unittest.TestCase):
 
     def setting_nodes(self):
         return ast.parse(self.plugin.read_text(encoding='utf-8')).body
+
+    def test_real_persona_source_is_the_shared_python_constant(self):
+        path = Path(__file__).resolve().parents[1] / 'virtualme' / 'chat' / 'persona.py'
+        self.assertEqual(self.persona_path, path)
+        with patch.object(self.admin, 'PLUGIN_FILE', path):
+            content = self.admin._extract_system_setting()
+        assignment = next(node for node in ast.parse(path.read_text(encoding='utf-8')).body
+                          if isinstance(node, ast.Assign) and any(
+                              isinstance(target, ast.Name) and target.id == 'SYSTEM_SETTING'
+                              for target in node.targets))
+        self.assertEqual(content, ast.literal_eval(assignment.value))
 
     def test_repeated_save_preserves_assignment_and_surrounding_code(self):
         for text in ('新的人设', '包含"引号"和\\路径\n第二行', ''):

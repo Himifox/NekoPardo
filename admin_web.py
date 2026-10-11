@@ -1,7 +1,7 @@
 """猫娘管理控制台 - 独立 FastAPI 服务（仅本机 127.0.0.1:9090 访问）
 
 只读数据源：用量遥测、TTS 遥测、预算、向量记忆、记忆文件、活跃群、运行日志。
-在线调整：SYSTEM_SETTING 人设（pardo_chat.py 中的 SYSTEM_SETTING 块）。
+在线调整：SYSTEM_SETTING 人设（virtualme/chat/persona.py 中的 SYSTEM_SETTING 块）。
 """
 import ast
 import json
@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
-PLUGIN_FILE = BASE_DIR / "plugins" / "pardo_chat.py"
+PLUGIN_FILE = BASE_DIR / "virtualme" / "chat" / "persona.py"
 
 app = FastAPI(title="猫娘管理控制台", version="0.1.0")
 
@@ -32,7 +32,7 @@ from plugins.tts import get_tts_usage_summary  # noqa: E402
 from plugins.usage_telemetry import get_model_usage_summary, telemetry_path, request_chat_completion  # noqa: E402
 from plugins.budget_guard import BudgetExceededError  # noqa: E402
 from plugins.vector_memory import get_vector_memory_stats, build_vector_memory_index  # noqa: E402
-from plugins.memory import sanitize_reply  # noqa: E402
+from virtualme.chat.text_policy import sanitize_reply  # noqa: E402
 from plugins.config import API_KEY, BASE_URL, MODEL_NAME  # noqa: E402
 from openai import AsyncOpenAI  # noqa: E402
 
