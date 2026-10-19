@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>猫娘管理控制台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1e293b; padding: 14px 24px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #334155; }
+  header h1 { font-size: 18px; color: #fbbf24; }
+  header span { color: #64748b; font-size: 13px; }
+  nav { display: flex; gap: 4px; padding: 12px 24px 0; }
+  nav button { background: none; border: none; color: #94a3b8; padding: 8px 16px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 14px; }
+  nav button.active { background: #1e293b; color: #fbbf24; }
+  main { padding: 20px 24px; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; color: #fbbf24; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .stat { background: #0f172a; border-radius: 8px; padding: 12px; }
+  .stat .label { font-size: 12px; color: #94a3b8; }
+  .stat .value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #334155; }
+  th { color: #94a3b8; font-weight: 500; }
+  pre { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; }
+  textarea { width: 100%; min-height: 300px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 13px; }
+  button.primary { background: #f59e0b; color: #0f172a; border: none; padding: 8px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  button.ghost { background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .pill { display: inline-block; background: #0f172a; border: 1px solid #334155; border-radius: 999px; padding: 3px 12px; font-size: 12px; margin: 2px; }
+  .muted { color: #64748b; font-size: 12px; }
+  .flex-between { display: flex; justify-content: space-between; align-items: center; }
+  input[type=text] { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 6px 10px; border-radius: 6px; }
+  #toast { position: fixed; bottom: 24px; right: 24px; background: #22c55e; color: #0f172a; padding: 10px 18px; border-radius: 8px; font-weight: 600; display: none; }
+  select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; padding: 6px 10px; border-radius: 6px; }
+  .chat-log { display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow-y: auto; padding-right: 4px; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.5; word-break: break-word; white-space: pre-wrap; }
+  .msg .meta { font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
+  .msg.user { align-self: flex-end; background: #f59e0b22; border: 1px solid #f59e0b55; }
+  .msg.user .meta { text-align: right; }
+  .msg.bot { align-self: flex-start; background: #38bdf822; border: 1px solid #38bdf855; }
+  .msg.system { align-self: center; background: #334155; color: #cbd5e1; font-size: 12px; }
+  .msg .role-tag { display: inline-block; background: #0f172a; border-radius: 4px; padding: 1px 6px; font-size: 10px; margin-right: 6px; }
+  .group-row { display: flex; justify-content: space-between; align-items: center; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; }
+  .group-row .gid { font-family: monospace; font-size: 14px; }
+  button.danger { background: #ef4444; color: white; border: none; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .chart-box { background: #0f172a; border-radius: 8px; padding: 12px; }
+  .chart-box h3 { font-size: 12px; color: #94a3b8; font-weight: 500; margin-bottom: 8px; }
+  .chart-box svg { width: 100%; height: auto; display: block; }
+  .bar { fill: #f59e0b; }
+  .bar2 { fill: #38bdf8; }
+  .bar3 { fill: #34d399; }
+  .axis-text { fill: #64748b; font-size: 10px; }
+  .legend { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; color: #94a3b8; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .chat-input { display: flex; gap: 10px; margin-top: 12px; }
+  .chat-input input { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 10px 14px; border-radius: 8px; font-size: 14px; }
+  .len-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .len-row input[type=range] { flex: 1; accent-color: #f59e0b; }
+  .len-row span { min-width: 40px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐋 猫娘管理控制台</h1>
+  <span>NekoPardo Admin · 仅本机访问</span>
+</header>
+<nav>
+  <button class="active" data-tab="overview">概览</button>
+  <button data-tab="chat">对话测试</button>
+  <button data-tab="memory">记忆</button>
+  <button data-tab="groups">群</button>
+  <button data-tab="logs">日志</button>
+  <button data-tab="persona">人设</button>
+</nav>
+
+<main>
+  <!-- 概览 -->
+  <div class="tab active" id="tab-overview">
+    <div class="card"><h2>今日用量</h2><div class="grid" id="overview-grid"></div></div>
+    <div class="card"><h2>预算</h2><div id="budget-box"></div></div>
+    <div class="card"><h2>用量图表</h2>
+      <div class="chart-row">
+        <div class="chart-box"><h3>按类型调用量</h3><div id="chart-kinds"></div></div>
+        <div class="chart-box"><h3>按类型 Token</h3><div id="chart-tokens"></div></div>
+        <div class="chart-box"><h3>近 N 小时活动</h3><div id="chart-hourly"></div></div>
+      </div>
+    </div>
+    <div class="card"><h2>模型分项</h2><div id="model-kind"></div></div>
+    <div class="card"><h2>向量记忆</h2><div id="vector-box"></div><div style="margin-top:12px"><button class="ghost" onclick="buildVectorIndex()">构建索引</button> <span id="vector-result" class="muted"></span></div></div>
+  </div>
+
+  <!-- 对话测试 -->
+  <div class="tab" id="tab-chat">
+    <div class="card">
+      <div class="flex-between" style="margin-bottom:12px">
+        <h2 style="margin:0">对话测试 <span class="muted">使用文件里最新人设，不经过 QQ</span></h2>
+        <button class="ghost" onclick="resetChat()">清空对话</button>
+      </div>
+      <div id="chat-test-box" class="chat-log" style="min-height:300px;max-height:60vh"></div>
+      <div class="chat-input">
+        <input type="text" id="chat-test-input" placeholder="输入消息，回车发送">
+        <button class="primary" onclick="sendChat()">发送</button>
+      </div>
+      <div class="len-row">
+        <span class="muted">回复长度</span>
+        <input type="range" id="chat-max-tokens" min="50" max="1000" step="50" value="300">
+        <span class="muted" id="chat-max-tokens-label">300</span>
+      </div>
+      <div class="len-row">
+        <span class="muted">温度</span>
+        <input type="range" id="chat-temp" min="50" max="200" step="5" value="100">
+        <span class="muted" id="chat-temp-label">1.00</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 记忆 -->
+  <div class="tab" id="tab-memory">
+    <div class="card">
+      <div class="flex-between" style="margin-bottom:12px">
+        <h2 style="margin:0">长期记忆 <span id="mem-total" class="muted"></span></h2>
+        <div>
+          <input type="text" id="mem-kw" placeholder="关键词">
+          <button class="ghost" onclick="loadMemory()">搜索</button>
+        </div>
+      </div>
+      <div id="memory-box" class="chat-log"></div>
+    </div>
+  </div>
+
+  <!-- 群 -->
+  <div class="tab" id="tab-groups">
+    <div class="card">
+      <h2>已启用群</h2>
+      <div class="flex-between" style="margin-bottom:12px; gap:12px">
+        <input type="text" id="new-group" placeholder="输入群号，回车或点击添加">
+        <button class="primary" onclick="addGroup()">添加群</button>
+      </div>
+      <div id="groups-box"></div>
+    </div>
+  </div>
+
+  <!-- 日志 -->
+  <div class="tab" id="tab-logs">
+    <div class="card">
+      <div class="flex-between" style="margin-bottom:12px">
+        <h2 style="margin:0">运行日志</h2>
+        <button class="ghost" onclick="loadLogs()">刷新</button>
+      </div>
+      <pre id="logs-box"></pre>
+    </div>
+  </div>
+
+  <!-- 人设 -->
+  <div class="tab" id="tab-persona">
+    <div class="card">
+      <h2>角色预设切换</h2>
+      <div class="flex-between" style="gap:12px">
+        <select id="persona-select" style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;flex:1"></select>
+        <button class="primary" onclick="applyPreset()">加载预设</button>
+      </div>
+      <p class="muted" style="margin-top:8px">加载预设会把下方人设框替换为对应角色的 SYSTEM_SETTING，需点"保存"才写入。</p>
+    </div>
+    <div class="card">
+      <h2>SYSTEM_SETTING 人设</h2>
+      <textarea id="persona-box"></textarea>
+      <div style="margin-top:12px">
+        <button class="primary" onclick="savePersona()">保存</button>
+        <span class="muted" style="margin-left:12px">保存后需重启 bot 才生效</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+async function api(url) { const r = await fetch(url); return r.json(); }
+function $(id) { return document.getElementById(id); }
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 2000); }
+
+document.querySelectorAll('nav button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    $('tab-' + b.dataset.tab).classList.add('active');
+    if (b.dataset.tab === 'overview') loadOverview();
+    if (b.dataset.tab === 'chat') loadChat();
+    if (b.dataset.tab === 'memory') loadMemory();
+    if (b.dataset.tab === 'groups') loadGroups();
+    if (b.dataset.tab === 'logs') loadLogs();
+    if (b.dataset.tab === 'persona') loadPersona();
+  };
+});
+
+function barChartSVG(items, color) {
+  // items: [{label, value}] -> 垂直柱状图
+  if (!items || !items.length) return '<span class="muted">暂无数据</span>';
+  const W = 260, H = 140, pad = 30, baseline = H - 24;
+  const max = Math.max(...items.map(i => i.value), 1);
+  const bw = (W - pad - 8) / items.length;
+  const bars = items.map((it, idx) => {
+    const bh = Math.max((it.value / max) * (baseline - 10), 2);
+    const x = pad + idx * bw + 4;
+    const y = baseline - bh;
+    return `<rect class="${color}" x="${x}" y="${y}" width="${bw - 8}" height="${bh}" rx="3"></rect>` +
+      `<text class="axis-text" x="${x + (bw - 8) / 2}" y="${baseline + 14}" text-anchor="middle">${it.label}</text>` +
+      `<text class="axis-text" x="${x + (bw - 8) / 2}" y="${y - 4}" text-anchor="middle">${it.value}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}">${bars}</svg>`;
+}
+
+async function loadCharts() {
+  try {
+    const d = await api('/api/charts');
+    // 按类型调用量
+    $('chart-kinds').innerHTML = barChartSVG(d.kinds.map(k => ({label: k.kind.replace('chat_completion','聊天').replace('embedding','向量'), value: k.success + k.failed})), 'bar');
+    // 按类型 token
+    $('chart-tokens').innerHTML = barChartSVG(d.kinds.map(k => ({label: k.kind.replace('chat_completion','聊天').replace('embedding','向量'), value: k.total_tokens})), 'bar2');
+    // 近 N 小时活动
+    $('chart-hourly').innerHTML = barChartSVG(d.hourly.map(h => ({label: h.hour + '时', value: h.calls})), 'bar3');
+  } catch(e) {
+    $('chart-kinds').innerHTML = '<span class="muted">图表加载失败</span>';
+  }
+}
+
+async function loadOverview() {
+  const d = await api('/api/overview');
+  loadCharts();
+  const m = d.model, t = d.tts;
+  const g = $('overview-grid');
+  g.innerHTML = [
+    ['模型成功', m.success + ' 次'],
+    ['模型失败', m.failed + ' 次'],
+    ['Token 总量', m.total_tokens],
+    ['模型花费', '¥' + Number(m.estimated_cost_cny).toFixed(4)],
+    ['TTS 成功', t.success + ' 次'],
+    ['TTS 字符', t.chars],
+    ['TTS 花费', '¥' + Number(t.estimated_cost_cny).toFixed(4)],
+    ['记忆条数', d.memory_total],
+  ].map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+  const b = d.budget;
+  $('budget-box').innerHTML = [
+    ['聊天 Token 限额', b.daily_chat_token_limit || '不限'],
+    ['Embedding 限额', b.daily_embedding_token_limit || '不限'],
+    ['TTS 字符限额', b.daily_tts_char_limit || '不限'],
+    ['主动聊天限额', b.proactive_daily_limit],
+  ].map(([l, v]) => `<span class="pill">${l}: ${v}</span>`).join('');
+
+  $('model-kind').innerHTML = table(
+    [['类型', '成功', '失败', 'Tokens', '花费(¥)']],
+    Object.entries(d.model.today_by_kind).map(([k, v]) =>
+      [k, v.success_calls, v.failed_calls, v.total_tokens, Number(v.estimated_cost_cny).toFixed(4)]));
+  $('model-kind').innerHTML += '<h2 style="margin-top:16px">按模型</h2>' + table(
+    [['模型', '成功', '失败', 'Tokens', '花费(¥)']],
+    Object.entries(d.model.today_by_model).map(([k, v]) =>
+      [k, v.success_calls, v.failed_calls, v.total_tokens, Number(v.estimated_cost_cny).toFixed(4)]));
+
+  const vm = d.vector_memory;
+  $('vector-box').innerHTML = [
+    ['启用', vm.enabled ? '是' : '否'],
+    ['Embedding 已配', vm.embedding_configured ? '是' : '否'],
+    ['记忆条数', vm.memory_records],
+    ['向量记录', vm.vector_records],
+  ].map(([l, v]) => `<span class="pill">${l}: ${v}</span>`).join(' ');
+}
+
+function table(headers, rows) {
+  if (!rows.length) return '<span class="muted">暂无数据</span>';
+  return `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+
+async function loadMemory() {
+  const kw = encodeURIComponent($('mem-kw').value || '');
+  const d = await api('/api/memory?limit=100&keyword=' + kw);
+  if (!d.records.length) { $('memory-box').innerHTML = '<span class="muted">暂无记录</span>'; return; }
+  $('mem-total').textContent = '共 ' + d.total + ' 条';
+  const escapeHtml = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  $('memory-box').innerHTML = d.records.map(r => {
+    const role = r.role === 'bot' ? 'bot' : (r.role === 'user' ? 'user' : 'system');
+    const time = (r.created_at || '').replace('T', ' ');
+    const sender = r.sender || (role === 'bot' ? '猫娘' : '用户');
+    const label = role === 'bot' ? '猫娘' : (role === 'user' ? '用户' : '系统');
+    return `<div class="msg ${role}"><div class="meta"><span class="role-tag">${label}</span>${escapeHtml(sender)} · ${escapeHtml(time)}</div>${escapeHtml(r.content)}</div>`;
+  }).join('');
+}
+
+async function loadGroups() {
+  const d = await api('/api/groups');
+  $('groups-box').innerHTML = d.groups.length
+    ? d.groups.map(g => `<div class="group-row"><span class="gid">${g}</span><button class="danger" onclick="removeGroup(${g})">移除</button></div>`).join('')
+    : '<span class="muted">暂无启用群</span>';
+}
+
+async function addGroup() {
+  const v = $('new-group').value.trim();
+  if (!v) return;
+  const r = await fetch('/api/groups', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({group_id: parseInt(v,10)})});
+  const d = await r.json();
+  if (d.ok) { toast('已添加群 ' + v); $('new-group').value = ''; loadGroups(); }
+  else toast('添加失败');
+}
+
+async function removeGroup(gid) {
+  const r = await fetch('/api/groups/' + gid, {method:'DELETE'});
+  const d = await r.json();
+  if (d.ok) { toast('已移除群 ' + gid); loadGroups(); }
+  else toast('移除失败');
+}
+
+async function loadPersonaPresets() {
+  const p = await api('/api/persona_presets');
+  $('persona-select').innerHTML = p.presets.map(x => `<option value="${x.key}">${x.name}</option>`).join('');
+}
+
+async function loadPersona() {
+  const d = await api('/api/system_setting');
+  $('persona-box').value = d.content;
+  loadPersonaPresets();
+}
+
+async function applyPreset() {
+  const key = $('persona-select').value;
+  if (!key) return;
+  const d = await api('/api/persona_preset/' + key);
+  $('persona-box').value = d.content;
+  toast('已加载预设：' + d.name + '，记得点保存');
+}
+
+async function loadLogs() {
+  const d = await api('/api/log?limit=300');
+  $('logs-box').textContent = d.lines.join(String.fromCharCode(10));
+}
+
+async function loadPersona() {
+  const d = await api('/api/system_setting');
+  $('persona-box').value = d.content;
+}
+
+async function savePersona() {
+  const content = $('persona-box').value;
+  const r = await fetch('/api/system_setting', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({content})
+  });
+  const d = await r.json();
+  if (d.ok) toast('已保存，重启 bot 后生效'); else toast('保存失败');
+}
+
+async function buildVectorIndex() {
+  $('vector-result').textContent = '构建中...';
+  try {
+    const r = await fetch('/api/vector_index/build', {method:'POST'});
+    const d = await r.json();
+    if (d.error) { $('vector-result').textContent = '失败：' + d.error; return; }
+    $('vector-result').textContent = '完成：新增 ' + d.added + ' 条，跳过 ' + d.skipped + '，失败 ' + d.failed;
+    loadOverview();
+  } catch(e) {
+    $('vector-result').textContent = '请求出错';
+  }
+}
+
+const escapeHtml = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function chatBubble(role, text, meta) {
+  return `<div class="msg ${role}"><div class="meta">${meta || ''}</div>${escapeHtml(text)}</div>`;
+}
+function loadChat() {
+  if (!$('chat-test-box').children.length) {
+    $('chat-test-box').innerHTML = chatBubble('bot', '本喵在这儿。要测试什么，直接说。', '猫娘 · 对话测试');
+  }
+}
+async function sendChat() {
+  const inp = $('chat-test-input');
+  const msg = inp.value.trim();
+  if (!msg) return;
+  inp.value = '';
+  const mt = parseInt($('chat-max-tokens').value, 10) || 300;
+  const temp = (parseInt($('chat-temp').value, 10) || 85) / 100;
+  $('chat-test-box').insertAdjacentHTML('beforeend', chatBubble('user', msg, '你'));
+  const typingEl = document.createElement('div');
+  typingEl.className = 'msg bot';
+  typingEl.innerHTML = '<div class="meta">猫娘</div>';
+  $('chat-test-box').appendChild(typingEl);
+  $('chat-test-box').scrollTop = $('chat-test-box').scrollHeight;
+  try {
+    const r = await fetch('/api/chat_test', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message: msg, max_tokens: mt, temperature: temp})});
+    const d = await r.json();
+    // 逐字输出效果（用本次的 typingEl，互不干扰）
+    const full = d.reply || '';
+    if (d.softened) {
+      // 软化重试成功：直接显示，跳过逐字
+      typingEl.innerHTML = '<div class="meta">猫娘</div><span class="muted">（已自动软化重试）</span>' + escapeHtml(full);
+      $('chat-test-box').scrollTop = $('chat-test-box').scrollHeight;
+      return;
+    }
+    let i = 0;
+    const typeSpeed = 12; // 每字符间隔 ms
+    await new Promise(resolve => {
+      const timer = setInterval(() => {
+        i += 1;
+        typingEl.innerHTML = '<div class="meta">猫娘</div>' + escapeHtml(full.slice(0, i));
+        $('chat-test-box').scrollTop = $('chat-test-box').scrollHeight;
+        if (i >= full.length) { clearInterval(timer); resolve(); }
+      }, typeSpeed);
+    });
+    typingEl.innerHTML = '<div class="meta">猫娘</div>' + escapeHtml(full);
+  } catch(e) {
+    typingEl.innerHTML = '<div class="meta">猫娘</div>（请求出错）';
+  }
+}
+async function resetChat() {
+  await fetch('/api/chat_test', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:'', reset:true})});
+  $('chat-test-box').innerHTML = chatBubble('bot', '对话已清空。', '猫娘');
+}
+
+// 回复长度滑块
+$('chat-max-tokens').addEventListener('input', () => {
+  $('chat-max-tokens-label').textContent = $('chat-max-tokens').value;
+});
+// 温度滑块
+$('chat-temp').addEventListener('input', () => {
+  $('chat-temp-label').textContent = (parseInt($('chat-temp').value, 10) / 100).toFixed(2);
+});
+
+loadOverview();
+loadPersonaPresets();
+document.getElementById('new-group').addEventListener('keydown', e => { if (e.key === 'Enter') addGroup(); });
+document.getElementById('mem-kw').addEventListener('keydown', e => { if (e.key === 'Enter') loadMemory(); });
+document.getElementById('chat-test-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+</script>
+</body>
+</html>

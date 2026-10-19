@@ -21,15 +21,15 @@
 
 ## 快速开始
 
-需要 Python 3.10+，以及能连接到机器人的 OneBot V11 实现（如 Lagrange）。以下命令在 Windows PowerShell 中执行。
+需要 Python 3.10+、uv，以及能连接到机器人的 OneBot V11 实现（如 NapCat）。
 
 ### 1. 安装依赖
 
-项目尚未固定依赖版本，基础依赖如下；建议在虚拟环境中安装：
-
-```powershell
-pip install nonebot2 nonebot-adapter-onebot openai httpx websockets
+```bash
+uv sync --locked
 ```
+
+依赖由 `pyproject.toml` 声明、`uv.lock` 固定。使用现有 unittest 测试框架。
 
 ### 2. 配置环境变量
 
@@ -44,14 +44,14 @@ ADMIN_UID=
 STARTUP_GROUP_ID=
 ```
 
-请通过运行环境、启动脚本或进程管理器注入环境变量，不能仅依赖新建 `.env` 文件。
+使用 `start.py` 时会加载项目根目录的 `.env`；也可以通过运行环境或进程管理器注入配置。
 
 ### 3. 启动
 
 启动 OneBot V11 实现，配置其连接到机器人，然后运行：
 
-```powershell
-python bot.py
+```bash
+uv run python start.py
 ```
 
 默认监听 `127.0.0.1:8081`。管理员在目标群发送 `#Neko` 启用机器人。
@@ -68,7 +68,7 @@ python bot.py
 | `DAILY_TTS_CHAR_LIMIT` | 每日语音字符上限，`0` 表示不限 |
 | `PROACTIVE_DAILY_LIMIT` | 每日主动聊天次数上限，默认 `5` |
 
-完整配置以 [plugins/config.py](plugins/config.py) 为准。
+完整配置以 [virtualme/config.py](virtualme/config.py) 为准。
 
 ## 管理员命令
 
@@ -83,7 +83,12 @@ python bot.py
 
 ## 开发与数据
 
-入口为 `bot.py`，插件职责见 [plugins/README.md](plugins/README.md)。启动时只显式加载所需插件，避免扫描整个插件目录。
+QQ 入口为 `bot.py`，管理后台入口为 `admin_web.py`。目录、依赖方向和数据兼容说明见 [架构说明](docs/architecture.md)。QQ 插件在 `virtualme/adapters/qq/` 中显式加载。
+
+```bash
+uv run python -m unittest discover -s tests
+uv run python admin_web.py
+```
 
 长期记忆默认保存在 `chat_data.jsonl`，索引与用量记录保存在 `data/`。主动聊天当日计数保存在 `data/proactive_usage.json`，重启后继续累计，可通过 `PROACTIVE_USAGE_FILE` 调整路径。请勿提交私人聊天数据或真实密钥。
 

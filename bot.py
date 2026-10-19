@@ -1,19 +1,19 @@
+"""QQ application assembly; plugin registration stays explicit."""
 import nonebot
-from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
+from nonebot.adapters.onebot.v11 import Adapter
 
-# 初始化 NoneBot
 nonebot.init()
-
-# 注册适配器 (连接 Lagrange)
-driver = nonebot.get_driver()
-driver.register_adapter(OneBotV11Adapter)
-
-# 显式加载已接入插件，避免把其他半成品模块一起加载。
-# nonebot.load_plugins("plugins")
-nonebot.load_plugin("plugins.pardo")
-nonebot.load_plugin("plugins.pardo_chat")
-nonebot.load_plugin("plugins.proactive_monitor")
+nonebot.get_driver().register_adapter(Adapter)
+for plugin in (
+    "virtualme.adapters.qq.events",
+    "virtualme.adapters.qq.commands",
+    "virtualme.adapters.qq.stickers",
+    "virtualme.adapters.qq.chat",
+    "virtualme.adapters.qq.proactive",
+    "virtualme.adapters.qq.startup",
+):
+    if nonebot.load_plugin(plugin) is None:
+        raise RuntimeError(f'Failed to load required QQ plugin: {plugin}')
 
 if __name__ == "__main__":
-    # 避免占用默认 8080 端口，改为 8081
     nonebot.run(host="127.0.0.1", port=8081)
