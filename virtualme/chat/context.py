@@ -3,15 +3,16 @@ import logging
 import os
 import random
 from typing import List
+from virtualme.models import SessionKey
 
-from plugins.config import HISTORY_FILE_PATH, TARGET_UID, VECTOR_MEMORY_ENABLED
-from plugins.vector_memory import search_vector_memory, format_recalled_memories
+from virtualme.config import HISTORY_FILE_PATH, TARGET_UID, VECTOR_MEMORY_ENABLED
+from virtualme.memory.retrieval import search_vector_memory, format_recalled_memories
 from virtualme.memory.session import get_history_str
 from virtualme.chat.persona import SYSTEM_SETTING
 
 logger = logging.getLogger(__name__)
 
-def load_history_for_group(group_id: int) -> str:
+def load_history_for_group(group_id: int | SessionKey) -> str:
     """
         加载指定群的历史记录字符串，用于喂给 AI
     """
@@ -35,7 +36,7 @@ def load_target_history(filepath: str, target_uid: str) -> List[str]:
         return []
 
 
-async def build_system_content(group_id: int, user_content: str) -> str:
+async def build_system_content(group_id: int | SessionKey, user_content: str) -> str:
     history = load_target_history(HISTORY_FILE_PATH, TARGET_UID)
     samples = random.sample(history, min(len(history), 40))
     user_samples_str = "\n".join(samples)
